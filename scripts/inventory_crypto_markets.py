@@ -7,9 +7,6 @@ from market_inventory.inventory import inventory_crypto_markets
 from market_inventory.polymarket_clients import GammaClient
 
 
-
-
-
 def main() -> None:
     coin_universe = CoinUniverse.from_json()
     project_universe = ProjectUniverse.from_json()
