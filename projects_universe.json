@@ -1,0 +1,7 @@
+[
+  {"key": "metamask", "label": "MetaMask", "type": "project"},
+  {"key": "opensea", "label": "OpenSea", "type": "project"},
+  {"key": "megaeth", "label": "MegaETH", "type": "project"},
+  {"key": "infinex", "label": "Infinex", "type": "project"},
+  {"key": "usd.ai", "label": "USD.AI", "type": "project"}
+]
