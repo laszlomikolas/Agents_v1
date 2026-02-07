@@ -1,7 +1,9 @@
+from __future__ import annotations
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+if TYPE_CHECKING:
+    from .universe import CoinUniverse, ProjectUniverse
 
-from .universe import CoinUniverse, ProjectUniverse
 
 
 def normalize_text(text: str) -> str:

@@ -1,5 +1,13 @@
-from market_inventory import CoinUniverse, ProjectUniverse, inventory_crypto_markets
-from src.polymarket.clients import GammaClient
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from market_inventory.universe import CoinUniverse, ProjectUniverse
+from market_inventory.inventory import inventory_crypto_markets
+from market_inventory.polymarket_clients import GammaClient
+
+
+
 
 
 def main() -> None:
