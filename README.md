@@ -1,6 +1,6 @@
 # Agents_v1
 
-An agentic hedge fund research scaffold for prediction markets, focused on crypto markets on Polymarket. The current codebase builds a **market inventory**, classifies resolution requirements, and runs an **LLM triage agent** that decides whether historical data is relevant and feasible to source for each market.
+An agentic hedge fund research scaffold for prediction markets, beginning with crypto markets on Polymarket. The current codebase builds a **market inventory**, classifies resolution requirements, and runs an **LLM triage agent** that decides whether historical data is relevant and feasible to source for each market.
 
 ## What this project is (so far)
 
