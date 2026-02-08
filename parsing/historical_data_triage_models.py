@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from parsing.connector_types import ConnectorType
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, List
+from typing import Any, Dict, Literal, Optional, List
 
 
 class DataCandidate(BaseModel):
@@ -13,6 +14,21 @@ class DataCandidate(BaseModel):
 
 
 class DataSourcePlan(BaseModel):
+    connector_type: ConnectorType = Field(..., description="Normalized connector category.")
+    connector_key: str = Field(
+        ...,
+        description="Stable connector identifier, e.g. 'free_api_generic:api.example.com/v1/series' or "
+                    "'wayback_snapshots:example.com/path'.",
+    )
+    required_params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Minimal params needed to fetch the series. Keep JSON-serializable.",
+    )
+    series_id: str = Field(
+        ...,
+        description="Canonical output series name in snake_case, e.g. 'el_salvador_btc_holdings_usd'.",
+    )
+
     method: Literal["api", "web_scrape", "wayback", "csv_download", "manual", "unknown"] = Field(
         ..., description="Acquisition method."
     )
@@ -22,13 +38,12 @@ class DataSourcePlan(BaseModel):
     access: Literal["free", "rate_limited_free", "paywalled", "unknown"] = Field(
         ..., description="Access type."
     )
-    paywall_evidence: Optional[str] = Field(
-        None, description="Explain why it seems paywalled (login/subscription/known provider)."
-    )
+    paywall_evidence: Optional[str] = Field(None, description="Explain why it seems paywalled.")
 
     effort: Literal["low", "medium", "high"] = Field(..., description="Engineering effort estimate.")
     reliability: Literal["low", "medium", "high"] = Field(..., description="Expected data reliability.")
-    notes: Optional[str] = Field(None, description="Extra notes / constraints / pitfalls.")
+    notes: Optional[str] = Field(None, description="Extra notes / pitfalls.")
+
 
 
 class HistoricalDataTriage(BaseModel):
