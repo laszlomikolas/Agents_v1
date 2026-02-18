@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import httpx
 
@@ -28,7 +29,7 @@ class GammaClient:
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict]:
-        return self._get(
+        events = self._get(
             "/events",
             params={
                 "tag_id": tag_id,
@@ -38,6 +39,27 @@ class GammaClient:
                 "offset": offset,
             },
         )
+
+        if not active:
+            return events
+
+        now = datetime.now(timezone.utc)
+
+        def parse_end_date(value: Any) -> datetime | None:
+            if not isinstance(value, str) or not value.strip():
+                return None
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+                    timezone.utc
+                )
+            except ValueError:
+                return None
+
+        return [
+            event
+            for event in events
+            if (end_date := parse_end_date(event.get("endDate"))) is not None and end_date > now
+        ]
 
     def get_tag_by_slug(self, slug: str) -> dict:
         return self._get(f"/tags/slug/{slug}")
