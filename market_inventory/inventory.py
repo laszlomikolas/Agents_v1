@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from market_inventory.polymarket_clients import GammaClient
+
 from .resolution_routing import route_resolution_terms
 from .text_utils import parse_metric, parse_underlying_symbol
 from .universe import CoinUniverse, ProjectUniverse
@@ -126,7 +128,7 @@ def extract_markets_from_event(ev: dict) -> list[dict]:
 
 
 def inventory_crypto_markets(
-    gamma: Any,
+    gamma: GammaClient,
     coin_universe: CoinUniverse,
     project_universe: ProjectUniverse,
     limit_events: int = 200,
