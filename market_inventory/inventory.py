@@ -59,7 +59,9 @@ def classify_edge_or_range(question: str, outcomes: Optional[list[str]]) -> str:
     return "unknown"
 
 
-def extract_resolution_source_and_terms(mkt: dict) -> tuple[Optional[str], Optional[str]]:
+def extract_resolution_source_and_terms(
+    mkt: dict, ev: Optional[dict] = None
+) -> tuple[Optional[str], Optional[str]]:
     source = (
         mkt.get("resolutionSource")
         or mkt.get("resolution_source")
@@ -68,6 +70,16 @@ def extract_resolution_source_and_terms(mkt: dict) -> tuple[Optional[str], Optio
     )
 
     terms = mkt.get("rules") or mkt.get("resolution") or mkt.get("description") or None
+
+    canonical_end = (
+        mkt.get("endDate")
+        or mkt.get("endDateIso")
+        or mkt.get("closeTime")
+        or (ev or {}).get("endDate")
+        or (ev or {}).get("endDateIso")
+        or (ev or {}).get("closeTime")
+        or None
+    )
 
     blob = ((source or "") + "\n" + (terms or "")).lower()
     if source is None:
@@ -91,6 +103,10 @@ def extract_resolution_source_and_terms(mkt: dict) -> tuple[Optional[str], Optio
 
     if terms:
         terms = terms.strip()
+        if canonical_end:
+            terms = (
+                f"{terms}\n\nCanonical market endDate (API metadata): {canonical_end}."
+            )
 
     if source:
         source = str(source).strip()
@@ -117,6 +133,28 @@ def extract_resolution_date(mkt: dict, ev: dict) -> Optional[pd.Timestamp]:
         dt = safe_dt(candidate)
         if dt is not None:
             return dt
+    return None
+
+
+def extract_resolution_date_from_terms(terms: Optional[str]) -> Optional[pd.Timestamp]:
+    if not terms:
+        return None
+
+    for line in terms.splitlines():
+        if line.lower().startswith("canonical market enddate") and ":" in line:
+            candidate = line.split(":", 1)[1].strip().rstrip(".")
+            dt = safe_dt(candidate)
+            if dt is not None:
+                return dt
+
+    iso_match = re.search(
+        r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b", terms
+    )
+    if iso_match:
+        dt = safe_dt(iso_match.group(0))
+        if dt is not None:
+            return dt
+
     return None
 
 
@@ -169,7 +207,14 @@ def inventory_crypto_markets(
                 symbol = parse_underlying_symbol(question, coin_universe, project_universe)
                 metric = parse_metric(question)
                 res_dt = extract_resolution_date(mkt, ev)
-                res_source, res_terms = extract_resolution_source_and_terms(mkt)
+                res_source, res_terms = extract_resolution_source_and_terms(mkt, ev)
+                terms_dt = extract_resolution_date_from_terms(res_terms)
+                date_mismatch_warning = False
+                if terms_dt is not None:
+                    date_mismatch_warning = (
+                        res_dt is None or pd.Timestamp(res_dt) != pd.Timestamp(terms_dt)
+                    )
+
                 routing = route_resolution_terms(res_source, res_terms)
 
                 rows.append(
@@ -181,6 +226,7 @@ def inventory_crypto_markets(
                         "resolution_date": res_dt,
                         "resolution_source": res_source,
                         "resolution_terms": res_terms,
+                        "warning_end_date_mismatch": date_mismatch_warning,
                         "resolution_data_type": routing.data_type,
                         "resolution_interval": routing.interval,
                         "interval_source": routing.interval_source,
