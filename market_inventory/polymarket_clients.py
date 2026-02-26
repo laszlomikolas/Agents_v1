@@ -40,9 +40,6 @@ class GammaClient:
             },
         )
 
-        if not active:
-            return events
-
         now = datetime.now(timezone.utc)
 
         def parse_end_date(value: Any) -> datetime | None:
@@ -55,11 +52,40 @@ class GammaClient:
             except ValueError:
                 return None
 
-        return [
-            event
-            for event in events
-            if (end_date := parse_end_date(event.get("endDate"))) is not None and end_date > now
-        ]
+        filtered_events: list[dict] = []
+        for event in events:
+            markets = event.get("markets")
+            if not isinstance(markets, list):
+                continue
+
+            filtered_markets = []
+            for market in markets:
+                if not isinstance(market, dict):
+                    continue
+
+                market_end = parse_end_date(
+                    market.get("endDate") or market.get("endDateIso") or market.get("closeTime")
+                )
+                market_active = market.get("active")
+                market_closed = market.get("closed")
+
+                if market_active is not True:
+                    continue
+                if market_closed is not False:
+                    continue
+                if market_end is None or market_end <= now:
+                    continue
+
+                filtered_markets.append(market)
+
+            if not filtered_markets:
+                continue
+
+            event_copy = dict(event)
+            event_copy["markets"] = filtered_markets
+            filtered_events.append(event_copy)
+
+        return filtered_events
 
     def get_tag_by_slug(self, slug: str) -> dict:
         return self._get(f"/tags/slug/{slug}")
