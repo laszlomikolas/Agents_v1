@@ -44,6 +44,55 @@ class DataSourcePlan(BaseModel):
     reliability: Literal["low", "medium", "high"] = Field(..., description="Expected data reliability.")
     notes: Optional[str] = Field(None, description="Extra notes / pitfalls.")
 
+    # --- Connector build specification (for downstream connector-builder agent) ---
+    extraction_target: str = Field(
+        ...,
+        description=(
+            "Precise description of what data element to extract from the page or response. "
+            "E.g., 'The TOTAL SPENDS headline metric ($973.3M) displayed in the page header stats area.'"
+        ),
+    )
+    extraction_method_detail: str = Field(
+        ...,
+        description=(
+            "Step-by-step instructions for how a scraper/fetcher should locate and extract the data. "
+            "Include CSS selector hints, JSON paths, regex patterns, or DOM navigation guidance."
+        ),
+    )
+    value_parse_pattern: Optional[str] = Field(
+        None,
+        description=(
+            "How to parse the raw extracted text into a numeric value. "
+            "E.g., 'Strip leading $, parse float, multiply by 1e6 for M suffix or 1e9 for B suffix.'"
+        ),
+    )
+    page_interaction_required: Optional[str] = Field(
+        None,
+        description=(
+            "Any page interactions or URL parameters needed to reach the correct data state. "
+            "E.g., 'Set dropdowns to Volume=Cumulative, Scope=All' or 'append ?range=1y to URL.'"
+        ),
+    )
+    rendering_notes: Optional[str] = Field(
+        None,
+        description=(
+            "Whether the page is server-side rendered (SSR) or client-side JS (CSR). "
+            "For CSR dashboards, note if there is a discoverable underlying API/XHR endpoint "
+            "that returns the data as JSON, which would be more reliable than scraping rendered HTML."
+        ),
+    )
+    output_columns: List[str] = Field(
+        default_factory=list,
+        description="Column names the connector function should produce. E.g., ['date', 'cumulative_volume_usd'].",
+    )
+    connector_function_name: str = Field(
+        ...,
+        description=(
+            "Suggested Python function name in snake_case. "
+            "Pattern: fetch_{source}_{metric}. E.g., 'fetch_paymentscan_cumulative_volume'."
+        ),
+    )
+
 
 
 class HistoricalDataTriage(BaseModel):
