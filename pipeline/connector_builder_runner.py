@@ -74,6 +74,7 @@ def _should_skip(plan: DataSourcePlan, *, skip_paywall: bool, skip_infeasible: b
 async def build_connectors_async(
     triaged_df: pd.DataFrame,
     *,
+    registry: Optional[Dict[str, ConnectorCode]] = None,
     max_concurrency: int = 10,
     skip_paywall: bool = True,
     skip_infeasible: bool = False,
@@ -87,11 +88,20 @@ async def build_connectors_async(
     unique DataSourcePlan, call the connector-builder agent for each one in
     parallel, and return a mapping ``connector_key -> ConnectorCode``.
 
+    Plans whose ``connector_key`` is already present in ``registry`` are skipped
+    entirely — no agent call is made for them.  The returned dict is the full
+    merged result: existing registry entries **plus** any newly built connectors.
+
     Parameters
     ----------
     triaged_df:
         Output of ``pipeline.historical_triage_runner.triage_dataframe_async``.
         Must contain a ``triage_plans_json`` column.
+    registry:
+        Previously built connectors keyed by ``connector_key``.  Pass the dict
+        returned by a previous call (or loaded via :func:`load_registry`) to
+        avoid rebuilding connectors that already exist.  The input dict is never
+        mutated; a new merged dict is returned.
     max_concurrency:
         Maximum number of connector-builder agent calls running simultaneously.
     skip_paywall:
@@ -100,7 +110,7 @@ async def build_connectors_async(
         When True, skip plans whose ``effort == "high"`` and
         ``reliability == "low"`` (high effort / low reliability combos).
     max_plans:
-        If set, cap the total number of plans processed (useful for testing).
+        If set, cap the total number of *new* plans processed (useful for testing).
     log_every:
         Log progress every N completed plans.
     plan_timeout_s:
@@ -111,34 +121,46 @@ async def build_connectors_async(
     Returns
     -------
     dict
-        ``{connector_key: ConnectorCode}`` for every successfully built connector.
-        Failed plans are logged and omitted from the result.
+        ``{connector_key: ConnectorCode}`` containing both pre-existing registry
+        entries and any newly built connectors.  Failed plans are logged and
+        omitted from the result.
     """
     t0 = time.time()
+    existing: Dict[str, ConnectorCode] = dict(registry) if registry else {}
 
     all_plans = _extract_plans(triaged_df)
     logger.info(
-        "build_connectors_async start: unique_plans=%d max_concurrency=%d "
-        "skip_paywall=%s skip_infeasible=%s max_plans=%s",
-        len(all_plans), max_concurrency, skip_paywall, skip_infeasible, max_plans,
+        "build_connectors_async start: unique_plans=%d registry_size=%d "
+        "max_concurrency=%d skip_paywall=%s skip_infeasible=%s max_plans=%s",
+        len(all_plans), len(existing), max_concurrency, skip_paywall, skip_infeasible, max_plans,
     )
 
-    # Apply filters
+    # Skip plans already in the registry
+    already_have = [p for p in all_plans if p.connector_key in existing]
+    new_plans = [p for p in all_plans if p.connector_key not in existing]
+    if already_have:
+        logger.info(
+            "Skipping %d plans already in registry: %s",
+            len(already_have),
+            [p.connector_key for p in already_have],
+        )
+
+    # Apply paywall / infeasibility filters
     plans = [
-        p for p in all_plans
+        p for p in new_plans
         if not _should_skip(p, skip_paywall=skip_paywall, skip_infeasible=skip_infeasible)
     ]
-    skipped = len(all_plans) - len(plans)
+    skipped = len(new_plans) - len(plans)
     if skipped:
-        logger.info("Skipped %d plans (paywall/infeasibility filter)", skipped)
+        logger.info("Skipped %d new plans (paywall/infeasibility filter)", skipped)
 
     if max_plans is not None:
         plans = plans[:max_plans]
-        logger.info("Capped to max_plans=%d; processing %d plans", max_plans, len(plans))
+        logger.info("Capped to max_plans=%d; processing %d new plans", max_plans, len(plans))
 
     if not plans:
-        logger.warning("No plans to build after filtering.")
-        return {}
+        logger.info("No new plans to build; returning registry as-is (%d entries).", len(existing))
+        return existing
 
     sem = asyncio.Semaphore(max_concurrency)
     results: Dict[str, ConnectorCode] = {}
@@ -186,10 +208,10 @@ async def build_connectors_async(
         await all_done
 
     logger.info(
-        "build_connectors_async done in %.2fs: ok=%d errors=%d",
-        time.time() - t0, len(results), len(errors),
+        "build_connectors_async done in %.2fs: new_ok=%d errors=%d registry_total=%d",
+        time.time() - t0, len(results), len(errors), len(existing) + len(results),
     )
-    return results
+    return {**existing, **results}
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +221,7 @@ async def build_connectors_async(
 def build_connectors(
     triaged_df: pd.DataFrame,
     *,
+    registry: Optional[Dict[str, ConnectorCode]] = None,
     max_concurrency: int = 10,
     skip_paywall: bool = True,
     skip_infeasible: bool = False,
@@ -211,6 +234,7 @@ def build_connectors(
     return asyncio.run(
         build_connectors_async(
             triaged_df,
+            registry=registry,
             max_concurrency=max_concurrency,
             skip_paywall=skip_paywall,
             skip_infeasible=skip_infeasible,
@@ -220,6 +244,42 @@ def build_connectors(
             total_timeout_s=total_timeout_s,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Registry persistence
+# ---------------------------------------------------------------------------
+
+def save_registry(
+    connectors: Dict[str, ConnectorCode],
+    path: str | Path,
+) -> None:
+    """
+    Persist the connector registry to a JSON file.
+
+    The file maps ``connector_key -> ConnectorCode`` fields and can be reloaded
+    with :func:`load_registry` to skip already-built connectors on the next run.
+    """
+    path = Path(path)
+    payload = {key: code.model_dump(mode="json") for key, code in connectors.items()}
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("save_registry: wrote %d entries to %s", len(connectors), path)
+
+
+def load_registry(path: str | Path) -> Dict[str, ConnectorCode]:
+    """
+    Load a connector registry previously saved with :func:`save_registry`.
+
+    Returns an empty dict if the file does not exist.
+    """
+    path = Path(path)
+    if not path.exists():
+        logger.info("load_registry: %s not found, starting with empty registry.", path)
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    registry = {key: ConnectorCode(**data) for key, data in payload.items()}
+    logger.info("load_registry: loaded %d entries from %s", len(registry), path)
+    return registry
 
 
 # ---------------------------------------------------------------------------
