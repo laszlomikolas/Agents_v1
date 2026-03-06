@@ -1,17 +1,29 @@
 """Chainlink on-chain price feed connector via Ethereum JSON-RPC (no web3 dependency)."""
 from __future__ import annotations
 
+import logging
 import requests
 import pandas as pd
 from typing import Optional
 
-# Public Ethereum RPC endpoint (no API key required)
-_DEFAULT_RPC = "https://eth.llamarpc.com"
+logger = logging.getLogger(__name__)
+
+# Ordered list of public Ethereum mainnet RPC endpoints (no API key required).
+# The connector tries each in sequence and uses the first one that returns a
+# valid non-empty response for latestRoundData().
+_PUBLIC_RPCS: list[str] = [
+    "https://cloudflare-eth.com",
+    "https://eth.llamarpc.com",
+    "https://rpc.ankr.com/eth",
+    "https://ethereum.publicnode.com",
+    "https://1rpc.io/eth",
+]
+
 _HEADERS = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
 
 # ABI function selectors (keccak256 of canonical signature, first 4 bytes)
-_SEL_LATEST = "0xfeaf968c"       # latestRoundData()
-_SEL_GET_ROUND = "0x9a6fc8f5"   # getRoundData(uint80)
+_SEL_LATEST    = "0xfeaf968c"   # latestRoundData()
+_SEL_GET_ROUND = "0x9a6fc8f5"  # getRoundData(uint80)
 
 # USD-denominated price feeds use 8 decimal places
 _USD_DECIMALS = 8
@@ -26,20 +38,63 @@ FEED_ADDRESSES: dict[str, str] = {
 }
 
 
-def _eth_call(rpc_url: str, contract: str, calldata: str) -> str:
-    """Issue a single eth_call JSON-RPC request and return the hex result."""
+def _eth_call(rpc_url: str, contract: str, calldata: str) -> Optional[str]:
+    """
+    Issue a single eth_call JSON-RPC request.
+
+    Returns the hex result string, or None if the endpoint returned an empty /
+    null result (which some public nodes do under rate-limiting or when the
+    call is unsupported). Raises on network errors or explicit JSON-RPC errors.
+    """
     payload = {
         "jsonrpc": "2.0",
-        "method": "eth_call",
-        "params": [{"to": contract, "data": calldata}, "latest"],
-        "id": 1,
+        "method":  "eth_call",
+        "params":  [{"to": contract, "data": calldata}, "latest"],
+        "id":      1,
     }
     resp = requests.post(rpc_url, json=payload, headers=_HEADERS, timeout=15)
     resp.raise_for_status()
     body = resp.json()
     if "error" in body:
         raise RuntimeError(f"JSON-RPC error: {body['error']}")
-    return body["result"]
+    result = body.get("result")
+    if not result or result == "0x":
+        return None
+    return result
+
+
+def _eth_call_with_fallback(
+    contract: str,
+    calldata: str,
+    rpc_url: Optional[str],
+) -> tuple[str, str]:
+    """
+    Try *rpc_url* first (if provided), then each endpoint in _PUBLIC_RPCS,
+    and return *(hex_result, working_rpc_url)* for the first endpoint that
+    returns a valid non-empty result.
+
+    Raises RuntimeError if every endpoint fails.
+    """
+    candidates = ([rpc_url] if rpc_url else []) + [
+        r for r in _PUBLIC_RPCS if r != rpc_url
+    ]
+    last_error: str = "no endpoints tried"
+    for url in candidates:
+        try:
+            result = _eth_call(url, contract, calldata)
+            if result:
+                logger.debug("eth_call succeeded via %s", url)
+                return result, url
+            logger.debug("eth_call returned empty from %s, trying next", url)
+            last_error = f"{url} returned empty result"
+        except Exception as exc:
+            logger.debug("eth_call failed for %s: %s", url, exc)
+            last_error = f"{url}: {exc}"
+    raise RuntimeError(
+        f"All Ethereum RPC endpoints failed for contract {contract}. "
+        f"Last error: {last_error}. "
+        "Pass rpc_url= with a working endpoint (e.g. Infura, Alchemy, or your own node)."
+    )
 
 
 def _decode_round_data(hex_result: str) -> dict:
@@ -69,7 +124,7 @@ def fetch_chainlink_price_feed(
     contract_address: Optional[str] = None,
     decimals: int = _USD_DECIMALS,
     n_rounds: int = 90,
-    rpc_url: str = _DEFAULT_RPC,
+    rpc_url: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Fetch recent price history from a Chainlink on-chain price feed.
@@ -78,17 +133,20 @@ def fetch_chainlink_price_feed(
     each, and returns up to n_rounds valid data points. Rounds with missing
     or zero updatedAt are silently skipped (they occur at phase transitions).
 
-    No API key is required. Uses eth.llamarpc.com by default; any public or
-    private Ethereum JSON-RPC endpoint can be substituted via rpc_url.
+    No API key is required. Automatically tries several public Ethereum RPC
+    endpoints in sequence (_PUBLIC_RPCS) until one responds successfully.
+    Supply rpc_url= to use a specific endpoint (e.g. Infura/Alchemy) and skip
+    the auto-fallback.
 
     Args:
         feed: Feed name key in FEED_ADDRESSES, e.g. "BTC/USD".
         contract_address: Override the contract address (required for feeds
                           not in FEED_ADDRESSES).
-        decimals: Number of decimal places to divide the raw integer answer by.
+        decimals: Decimal places to divide the raw integer answer by.
                   USD feeds use 8; some feeds use 18.
         n_rounds: Maximum number of historical rounds to fetch.
-        rpc_url: Ethereum JSON-RPC endpoint URL.
+        rpc_url: Specific Ethereum JSON-RPC endpoint to use. When None, tries
+                 _PUBLIC_RPCS in order and picks the first that works.
 
     Returns:
         DataFrame with columns: timestamp (UTC), round_id, price.
@@ -100,42 +158,40 @@ def fetch_chainlink_price_feed(
             "Pass contract_address= for custom feeds."
         )
 
-    # 1. Fetch the latest round to get the current round ID
-    latest_hex = _eth_call(rpc_url, address, _SEL_LATEST)
-    if not latest_hex or latest_hex == "0x":
-        raise RuntimeError(f"Empty response from latestRoundData() for {feed}")
+    # 1. Find a working RPC and fetch the latest round
+    latest_hex, working_rpc = _eth_call_with_fallback(address, _SEL_LATEST, rpc_url)
     latest = _decode_round_data(latest_hex)
     latest_round_id = latest["round_id"]
+    logger.debug("latestRoundData: round_id=%d via %s", latest_round_id, working_rpc)
 
-    # 2. Iterate backwards through n_rounds historical rounds
+    # 2. Iterate backwards through n_rounds historical rounds using the same RPC
     records: list[dict] = []
     for i in range(n_rounds):
         rid = latest_round_id - i
         if rid <= 0:
             break
         try:
-            # Encode uint80 roundId as a 32-byte ABI word (left-padded)
             calldata = _SEL_GET_ROUND + rid.to_bytes(32, "big").hex()
-            hex_result = _eth_call(rpc_url, address, calldata)
-            if not hex_result or hex_result == "0x":
-                continue  # round does not exist (phase boundary)
+            hex_result = _eth_call(working_rpc, address, calldata)
+            if not hex_result:
+                continue  # round does not exist (phase boundary or rate limit)
             rd = _decode_round_data(hex_result)
             if rd["updated_at"] == 0:
                 continue  # invalid / empty round
             records.append({
                 "timestamp": pd.Timestamp(rd["updated_at"], unit="s", tz="UTC"),
-                "round_id": rd["round_id"],
-                "price": rd["answer"] / (10 ** decimals),
+                "round_id":  rd["round_id"],
+                "price":     rd["answer"] / (10 ** decimals),
             })
         except Exception:
             continue  # skip malformed or reverted rounds
 
     if not records:
         raise RuntimeError(
-            f"No valid rounds returned for feed '{feed}' at {address}"
+            f"No valid rounds returned for feed '{feed}' at {address} via {working_rpc}"
         )
 
     df = pd.DataFrame(records)
     df["round_id"] = df["round_id"].astype("int64")
-    df["price"] = df["price"].astype(float)
+    df["price"]    = df["price"].astype(float)
     return df[["timestamp", "round_id", "price"]].sort_values("timestamp").reset_index(drop=True)
