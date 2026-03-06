@@ -62,13 +62,35 @@ def _row_dict(row: pd.Series) -> Dict[str, Any]:
 DEFAULT_CACHE_PATH = Path("triage_cache.parquet")
 
 
+def _strip_arrow_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert any pd.ArrowDtype columns to plain numpy/object dtypes.
+
+    Newer pandas versions return ArrowDtype-backed columns from read_parquet.
+    When those are concat-ed with numpy-backed data and re-serialised, pyarrow
+    raises ArrowKeyError on its internal extension type registry.  This helper
+    normalises everything to standard dtypes before any parquet round-trip.
+    """
+    out = {}
+    for col in df.columns:
+        s = df[col]
+        if isinstance(s.dtype, pd.ArrowDtype):
+            try:
+                # Preserve numeric/bool precision where possible
+                out[col] = s.astype(s.dtype.numpy_dtype)
+            except (TypeError, AttributeError):
+                out[col] = s.astype(object)
+        else:
+            out[col] = s
+    return pd.DataFrame(out, index=df.index)
+
+
 def save_triage_cache(
     df: pd.DataFrame,
     path: Union[str, Path] = DEFAULT_CACHE_PATH,
 ) -> Path:
     """Persist a triaged DataFrame to parquet."""
     path = Path(path)
-    df.to_parquet(path, index=False)
+    _strip_arrow_dtypes(df).to_parquet(path, index=False)
     logger.info("triage cache saved: %s (%d rows)", path, len(df))
     return path
 
@@ -81,7 +103,7 @@ def load_triage_cache(
     if not path.exists():
         logger.info("no triage cache found at %s", path)
         return None
-    df = pd.read_parquet(path)
+    df = _strip_arrow_dtypes(pd.read_parquet(path))
     logger.info("triage cache loaded: %s (%d rows)", path, len(df))
     return df
 
