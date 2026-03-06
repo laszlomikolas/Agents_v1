@@ -337,7 +337,7 @@ OUTPUT JSON SCHEMA (must match):
 
 historical_data_triage_agent = Agent(
     name="historical_data_triage",
-    model="gpt-5.2-pro-2025-12-11",
+    model="gpt-5.4",
     instructions=INSTRUCTIONS,
     output_type=AgentOutputSchema(HistoricalDataTriage, strict_json_schema=False),
 )
