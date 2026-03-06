@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 import logging
@@ -11,6 +12,25 @@ from parsing.historical_data_triage_models import HistoricalDataTriage
 
 
 logger = logging.getLogger(__name__)
+
+# ── Columns used to detect whether an inventory row has changed ──────────────
+DIFF_COLUMNS: List[str] = [
+    "market",
+    "kind",
+    "symbol",
+    "metric",
+    "resolution_date",
+    "resolution_source",
+    "resolution_terms",
+    "warning_end_date_mismatch",
+    "resolution_data_type",
+    "resolution_interval",
+    "interval_source",
+    "routing_notes",
+]
+
+# The "market" column is the natural key (unique question text per row).
+_ROW_KEY = "market"
 
 def _row_dict(row: pd.Series) -> Dict[str, Any]:
     # Ensure consistent keys
@@ -33,6 +53,207 @@ def _row_dict(row: pd.Series) -> Dict[str, Any]:
         d["market"] = d["title"]
 
     return d
+
+
+# ---------------------------------------------------------------------------
+# Triage cache: save / load
+# ---------------------------------------------------------------------------
+
+DEFAULT_CACHE_PATH = Path("triage_cache.parquet")
+
+
+def save_triage_cache(
+    df: pd.DataFrame,
+    path: Union[str, Path] = DEFAULT_CACHE_PATH,
+) -> Path:
+    """Persist a triaged DataFrame to parquet."""
+    path = Path(path)
+    df.to_parquet(path, index=False)
+    logger.info("triage cache saved: %s (%d rows)", path, len(df))
+    return path
+
+
+def load_triage_cache(
+    path: Union[str, Path] = DEFAULT_CACHE_PATH,
+) -> Optional[pd.DataFrame]:
+    """Load a previously-saved triage cache.  Returns None if it doesn't exist."""
+    path = Path(path)
+    if not path.exists():
+        logger.info("no triage cache found at %s", path)
+        return None
+    df = pd.read_parquet(path)
+    logger.info("triage cache loaded: %s (%d rows)", path, len(df))
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Diff: which inventory rows need (re-)triaging?
+# ---------------------------------------------------------------------------
+
+def _normalise_for_compare(val: object) -> str:
+    """Stringify a cell value so NaN, None, and NaT all become ''."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, pd.Timestamp):
+        return str(val)
+    return str(val)
+
+
+def diff_inventory_vs_cache(
+    inventory_df: pd.DataFrame,
+    cache_df: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Return the subset of *inventory_df* that needs triaging.
+
+    A row needs triaging when:
+    1. Its ``market`` value does not appear in the cache at all, **or**
+    2. Any of the ``DIFF_COLUMNS`` values differ between the inventory row
+       and the cached row for the same ``market``.
+
+    Returns a (possibly empty) DataFrame with the same columns as
+    *inventory_df* and a fresh 0-based index.
+    """
+    if cache_df is None or cache_df.empty:
+        logger.info("diff: no cache → all %d rows need triaging", len(inventory_df))
+        return inventory_df.reset_index(drop=True)
+
+    # Build a lookup: market → dict of diff-column values (stringified)
+    cache_lookup: Dict[str, Dict[str, str]] = {}
+    for _, row in cache_df.iterrows():
+        key = row.get(_ROW_KEY)
+        if key is None or (isinstance(key, float) and pd.isna(key)):
+            continue
+        cache_lookup[str(key)] = {
+            col: _normalise_for_compare(row.get(col))
+            for col in DIFF_COLUMNS
+        }
+
+    needs_triage_mask = []
+    for _, row in inventory_df.iterrows():
+        key = str(row.get(_ROW_KEY, ""))
+        cached = cache_lookup.get(key)
+        if cached is None:
+            needs_triage_mask.append(True)
+            continue
+
+        # Compare each diff column
+        changed = False
+        for col in DIFF_COLUMNS:
+            inv_val = _normalise_for_compare(row.get(col))
+            if inv_val != cached.get(col, ""):
+                changed = True
+                break
+        needs_triage_mask.append(changed)
+
+    delta = inventory_df.loc[needs_triage_mask].reset_index(drop=True)
+    logger.info(
+        "diff: %d/%d inventory rows need triaging (%d cached, %d unchanged)",
+        len(delta),
+        len(inventory_df),
+        len(cache_lookup),
+        len(inventory_df) - len(delta),
+    )
+    return delta
+
+
+# ---------------------------------------------------------------------------
+# Incremental triage: only triage new / changed rows, merge with cache
+# ---------------------------------------------------------------------------
+
+async def triage_dataframe_incremental_async(
+    inventory_df: pd.DataFrame,
+    *,
+    cache_path: Union[str, Path] = DEFAULT_CACHE_PATH,
+    max_concurrency: int = 20,
+    only_source_nan_or_url: bool = True,
+    max_rows: Optional[int] = None,
+    log_every: int = 25,
+    row_timeout_s: float = 45.0,
+    total_timeout_s: Optional[float] = None,
+) -> pd.DataFrame:
+    """Incremental wrapper around :func:`triage_dataframe_async`.
+
+    1. Load the cached triage results (if any).
+    2. Diff *inventory_df* against the cache to find new / changed rows.
+    3. Triage **only** the delta rows.
+    4. Merge the fresh triage results back into the full cache.
+    5. Save the updated cache and return the merged DataFrame.
+
+    Rows that disappeared from the inventory (i.e. present in cache but not in
+    *inventory_df*) are **dropped** from the returned result — they represent
+    markets that are no longer active.
+    """
+    cache_df = load_triage_cache(cache_path)
+    delta = diff_inventory_vs_cache(inventory_df, cache_df)
+
+    if delta.empty:
+        logger.info("incremental triage: nothing to do — all rows are cached and unchanged")
+        # Still restrict to current inventory (drop stale cache rows)
+        if cache_df is not None:
+            current_markets = set(inventory_df[_ROW_KEY].astype(str))
+            result = cache_df[cache_df[_ROW_KEY].astype(str).isin(current_markets)].reset_index(drop=True)
+            return result
+        return delta
+
+    logger.info(
+        "incremental triage: %d new/changed rows to triage (out of %d inventory rows)",
+        len(delta), len(inventory_df),
+    )
+
+    fresh = await triage_dataframe_async(
+        delta,
+        max_concurrency=max_concurrency,
+        only_source_nan_or_url=only_source_nan_or_url,
+        max_rows=max_rows,
+        log_every=log_every,
+        row_timeout_s=row_timeout_s,
+        total_timeout_s=total_timeout_s,
+    )
+
+    # Merge: start from cache, drop rows that were re-triaged, append fresh
+    if cache_df is not None and not cache_df.empty:
+        retriaged_markets = set(fresh[_ROW_KEY].astype(str))
+        kept = cache_df[~cache_df[_ROW_KEY].astype(str).isin(retriaged_markets)]
+        merged = pd.concat([kept, fresh], ignore_index=True)
+    else:
+        merged = fresh
+
+    # Drop rows no longer in inventory
+    current_markets = set(inventory_df[_ROW_KEY].astype(str))
+    merged = merged[merged[_ROW_KEY].astype(str).isin(current_markets)].reset_index(drop=True)
+
+    save_triage_cache(merged, cache_path)
+    logger.info(
+        "incremental triage done: %d triaged this run, %d total cached",
+        len(fresh), len(merged),
+    )
+    return merged
+
+
+def triage_dataframe_incremental(
+    inventory_df: pd.DataFrame,
+    *,
+    cache_path: Union[str, Path] = DEFAULT_CACHE_PATH,
+    max_concurrency: int = 20,
+    only_source_nan_or_url: bool = True,
+    max_rows: Optional[int] = None,
+    log_every: int = 25,
+    row_timeout_s: float = 30.0,
+    total_timeout_s: float = 300.0,
+) -> pd.DataFrame:
+    """Sync wrapper for :func:`triage_dataframe_incremental_async`."""
+    return asyncio.run(
+        triage_dataframe_incremental_async(
+            inventory_df,
+            cache_path=cache_path,
+            max_concurrency=max_concurrency,
+            only_source_nan_or_url=only_source_nan_or_url,
+            max_rows=max_rows,
+            log_every=log_every,
+            row_timeout_s=row_timeout_s,
+            total_timeout_s=total_timeout_s,
+        )
+    )
 
 
 async def triage_dataframe_async(

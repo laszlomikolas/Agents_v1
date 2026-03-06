@@ -200,7 +200,7 @@ CRITICAL RULES
 
 connector_builder_agent = Agent(
     name="connector_builder",
-    model="gpt-5.2-pro-2025-12-11",
+    model="gpt-5.4",
     instructions=INSTRUCTIONS,
     output_type=AgentOutputSchema(ConnectorCode, strict_json_schema=False),
 )
