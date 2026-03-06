@@ -91,9 +91,12 @@ def load_triage_cache(
 # ---------------------------------------------------------------------------
 
 def _normalise_for_compare(val: object) -> str:
-    """Stringify a cell value so NaN, None, and NaT all become ''."""
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return ""
+    """Stringify a cell value so NaN, None, NaT, and pd.NA all become ''."""
+    try:
+        if pd.isna(val):
+            return ""
+    except (TypeError, ValueError):
+        pass
     if isinstance(val, pd.Timestamp):
         return str(val)
     return str(val)
