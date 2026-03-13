@@ -12,7 +12,7 @@ Uses the **OpenAI Agents SDK** (`agents` package) — not Anthropic/Claude API �
 ### Agent module pattern (`pm_agents/`)
 Every agent follows this structure:
 1. `INSTRUCTIONS` — long-form prompt string with rubric, guardrails, output schema docs
-2. `Agent()` — instantiated with `model="gpt-5.2-pro-2025-12-11"`, `output_type=AgentOutputSchema(MyModel, strict_json_schema=False)`
+2. `Agent()` — instantiated with `model="gpt-5.4"`, `output_type=AgentOutputSchema(MyModel, strict_json_schema=False)`
 3. Async worker function — wraps `Runner.run()` with `asyncio.wait_for()` for timeout, structured logging on start/ok/timeout/error
 
 ### Runner pattern (`pipeline/`)
