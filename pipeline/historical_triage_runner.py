@@ -9,6 +9,7 @@ import logging
 import time
 from pm_agents.historical_data_triage_agent import triage_market_row
 from parsing.historical_data_triage_models import HistoricalDataTriage
+from market_inventory.liquidity_screen import apply_liquidity_screen
 
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,31 @@ def _row_dict(row: pd.Series) -> Dict[str, Any]:
         d["market"] = d["title"]
 
     return d
+
+
+# ---------------------------------------------------------------------------
+# Liquidity gate: only triage markets that clear the tradeability screen
+# ---------------------------------------------------------------------------
+
+def _gate_liquidity(df: pd.DataFrame, enabled: bool) -> pd.DataFrame:
+    """Filter *df* to rows that pass the liquidity screen.
+
+    If the ``passes_liquidity_screen`` column is absent, it is computed via
+    :func:`market_inventory.liquidity_screen.apply_liquidity_screen` (which
+    raises loudly if the underlying liquidity/volume columns are missing — no
+    silent degradation). When *enabled* is False the frame is returned
+    unchanged. Returns a frame with a fresh 0-based index.
+    """
+    if not enabled or df.empty:
+        return df
+
+    if "passes_liquidity_screen" not in df.columns:
+        df = apply_liquidity_screen(df)
+
+    before = len(df)
+    gated = df[df["passes_liquidity_screen"].astype(bool)].reset_index(drop=True)
+    logger.info("liquidity gate: %d/%d rows pass the screen", len(gated), before)
+    return gated
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +214,7 @@ async def triage_dataframe_incremental_async(
     cache_path: Union[str, Path] = DEFAULT_CACHE_PATH,
     max_concurrency: int = 20,
     only_source_nan_or_url: bool = True,
+    require_liquidity_screen: bool = True,
     max_rows: Optional[int] = None,
     log_every: int = 25,
     row_timeout_s: float = 45.0,
@@ -195,16 +222,20 @@ async def triage_dataframe_incremental_async(
 ) -> pd.DataFrame:
     """Incremental wrapper around :func:`triage_dataframe_async`.
 
-    1. Load the cached triage results (if any).
-    2. Diff *inventory_df* against the cache to find new / changed rows.
-    3. Triage **only** the delta rows.
-    4. Merge the fresh triage results back into the full cache.
-    5. Save the updated cache and return the merged DataFrame.
+    1. Apply the liquidity gate so untradeable markets never enter the cache.
+    2. Load the cached triage results (if any).
+    3. Diff the gated inventory against the cache to find new / changed rows.
+    4. Triage **only** the delta rows.
+    5. Merge the fresh triage results back into the full cache.
+    6. Save the updated cache and return the merged DataFrame.
 
     Rows that disappeared from the inventory (i.e. present in cache but not in
     *inventory_df*) are **dropped** from the returned result — they represent
     markets that are no longer active.
     """
+    # Gate up front so screened-out markets never enter the diff/cache churn.
+    inventory_df = _gate_liquidity(inventory_df, require_liquidity_screen)
+
     cache_df = load_triage_cache(cache_path)
     delta = diff_inventory_vs_cache(inventory_df, cache_df)
 
@@ -226,6 +257,7 @@ async def triage_dataframe_incremental_async(
         delta,
         max_concurrency=max_concurrency,
         only_source_nan_or_url=only_source_nan_or_url,
+        require_liquidity_screen=False,  # already gated above
         max_rows=max_rows,
         log_every=log_every,
         row_timeout_s=row_timeout_s,
@@ -258,6 +290,7 @@ def triage_dataframe_incremental(
     cache_path: Union[str, Path] = DEFAULT_CACHE_PATH,
     max_concurrency: int = 20,
     only_source_nan_or_url: bool = True,
+    require_liquidity_screen: bool = True,
     max_rows: Optional[int] = None,
     log_every: int = 25,
     row_timeout_s: float = 30.0,
@@ -270,6 +303,7 @@ def triage_dataframe_incremental(
             cache_path=cache_path,
             max_concurrency=max_concurrency,
             only_source_nan_or_url=only_source_nan_or_url,
+            require_liquidity_screen=require_liquidity_screen,
             max_rows=max_rows,
             log_every=log_every,
             row_timeout_s=row_timeout_s,
@@ -283,24 +317,31 @@ async def triage_dataframe_async(
     *,
     max_concurrency: int = 20,
     only_source_nan_or_url: bool = True,
-    max_rows: Optional[int] = None,          
-            log_every: int = 25,                   
-    row_timeout_s: float = 45.0,       
-    total_timeout_s: Optional[float] = None,  
+    require_liquidity_screen: bool = True,
+    max_rows: Optional[int] = None,
+            log_every: int = 25,
+    row_timeout_s: float = 45.0,
+    total_timeout_s: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Returns a copy of df with triage columns appended.
 
+    require_liquidity_screen: if True, drop rows that fail the liquidity screen
+        before any LLM calls, so triage spend only goes to tradeable markets.
     max_rows: if set, only process up to this many rows after filtering.
     log_every: log progress every N completed rows.
     """
     t0 = time.time()
     logger.info(
-        "triage_dataframe_async start: rows=%d max_concurrency=%d only_source_nan_or_url=%s max_rows=%s",
-        len(df), max_concurrency, only_source_nan_or_url, max_rows
+        "triage_dataframe_async start: rows=%d max_concurrency=%d only_source_nan_or_url=%s "
+        "require_liquidity_screen=%s max_rows=%s",
+        len(df), max_concurrency, only_source_nan_or_url, require_liquidity_screen, max_rows
     )
 
     work = df.copy()
+
+    # Liquidity gate: drop untradeable markets before any LLM calls
+    work = _gate_liquidity(work, require_liquidity_screen)
 
     # Filter
     if only_source_nan_or_url and "resolution_source" in work.columns:
@@ -419,6 +460,7 @@ def triage_dataframe(
     *,
     max_concurrency: int = 20,
     only_source_nan_or_url: bool = True,
+    require_liquidity_screen: bool = True,
     max_rows: Optional[int] = None,
     log_every: int = 25,
     row_timeout_s=30.0,
@@ -429,6 +471,7 @@ def triage_dataframe(
             df,
             max_concurrency=max_concurrency,
             only_source_nan_or_url=only_source_nan_or_url,
+            require_liquidity_screen=require_liquidity_screen,
             max_rows=max_rows,
             log_every=log_every,
             row_timeout_s=row_timeout_s,

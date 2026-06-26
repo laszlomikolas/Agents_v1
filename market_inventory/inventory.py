@@ -223,6 +223,10 @@ def inventory_crypto_markets(
                         "kind": kind,
                         "symbol": symbol,
                         "metric": metric,
+                        "liquidity_usd": mkt.get("liquidityNum"),
+                        "volume_24h_usd": mkt.get("volume24hr"),
+                        "volume_30d_usd": mkt.get("volume1mo"),
+                        "volume_total_usd": mkt.get("volumeNum"),
                         "resolution_date": res_dt,
                         "resolution_source": res_source,
                         "resolution_terms": res_terms,
@@ -251,6 +255,8 @@ def inventory_crypto_markets(
         df["resolution_date"] = pd.to_datetime(
             df["resolution_date"], utc=True, errors="coerce"
         )
+        for col in ("liquidity_usd", "volume_24h_usd", "volume_30d_usd", "volume_total_usd"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(subset=["resolution_date"])
         df = df.sort_values(["kind", "resolution_date"]).reset_index(drop=True)
 
