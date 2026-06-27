@@ -38,6 +38,48 @@ def normalize_outcomes(outcomes: Any) -> Optional[list[str]]:
     return None
 
 
+def _parse_json_list(value: Any) -> Optional[list]:
+    """Parse a value that may be a list or a JSON-encoded list string."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return None
+        if isinstance(parsed, list):
+            return parsed
+    return None
+
+
+def parse_clob_token_ids(value: Any) -> Optional[list[str]]:
+    """Normalize the Gamma ``clobTokenIds`` field to a list of string ids."""
+    parsed = _parse_json_list(value)
+    if parsed is None:
+        return None
+    return [str(token_id) for token_id in parsed]
+
+
+def parse_outcome_prices(value: Any) -> Optional[list[Optional[float]]]:
+    """Normalize the Gamma ``outcomePrices`` field to a list of floats.
+
+    On resolved markets these are typically ``["1", "0"]``; on open markets
+    they are the current implied prices, e.g. ``["0.62", "0.38"]``.
+    """
+    parsed = _parse_json_list(value)
+    if parsed is None:
+        return None
+    prices: list[Optional[float]] = []
+    for price in parsed:
+        try:
+            prices.append(float(price))
+        except (TypeError, ValueError):
+            prices.append(None)
+    return prices
+
+
 def classify_edge_or_range(question: str, outcomes: Optional[list[str]]) -> str:
     q = (question or "").lower()
 
@@ -223,6 +265,14 @@ def inventory_crypto_markets(
                         "kind": kind,
                         "symbol": symbol,
                         "metric": metric,
+                        "market_id": mkt.get("id"),
+                        "slug": mkt.get("slug"),
+                        "condition_id": mkt.get("conditionId") or mkt.get("condition_id"),
+                        "clob_token_ids": parse_clob_token_ids(mkt.get("clobTokenIds")),
+                        "outcomes": outcomes,
+                        "outcome_prices": parse_outcome_prices(
+                            mkt.get("outcomePrices") or mkt.get("outcome_prices")
+                        ),
                         "liquidity_usd": mkt.get("liquidityNum"),
                         "volume_24h_usd": mkt.get("volume24hr"),
                         "volume_30d_usd": mkt.get("volume1mo"),
