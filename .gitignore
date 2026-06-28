@@ -1,3 +1,8 @@
+# Local market-data store (SQLite time-series DB)
+data/
+*.db
+*.sqlite
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

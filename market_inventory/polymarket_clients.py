@@ -4,6 +4,46 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import httpx
+import pandas as pd
+
+
+def parse_price_history(payload: Any) -> pd.DataFrame:
+    """Parse a CLOB /prices-history payload into a tidy DataFrame.
+
+    Accepts either ``{"history": [{"t": <unix_s>, "p": <price>}, ...]}`` or a
+    bare list of those points. Returns columns ``timestamp`` (UTC) and
+    ``price`` (float); empty (with those columns) when there is no data.
+    """
+    if isinstance(payload, dict):
+        history = payload.get("history")
+    elif isinstance(payload, list):
+        history = payload
+    else:
+        history = None
+
+    empty = pd.DataFrame(columns=["timestamp", "price"])
+    if not history:
+        return empty
+
+    rows: list[tuple[int, float]] = []
+    for point in history:
+        if not isinstance(point, dict):
+            continue
+        t = point.get("t")
+        p = point.get("p") if point.get("p") is not None else point.get("price")
+        if t is None or p is None:
+            continue
+        try:
+            rows.append((int(t), float(p)))
+        except (TypeError, ValueError):
+            continue
+
+    if not rows:
+        return empty
+
+    df = pd.DataFrame(rows, columns=["_ts", "price"])
+    df["timestamp"] = pd.to_datetime(df["_ts"], unit="s", utc=True)
+    return df[["timestamp", "price"]].sort_values("timestamp").reset_index(drop=True)
 
 
 @dataclass(frozen=True)
@@ -109,3 +149,48 @@ class ClobClient:
         if mp is None:
             raise ValueError(f"Unexpected midpoint payload: {out}")
         return float(mp)
+
+    def get_price_history(
+        self,
+        token_id: str,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        interval: Optional[str] = None,
+        fidelity: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Fetch the historical midpoint time-series for a CLOB token.
+
+        Endpoint: GET /prices-history?market=<token_id>
+
+        Args:
+            token_id: The CLOB token id (e.g. the YES outcome token).
+            start_ts: Start time as Unix seconds (optional).
+            end_ts: End time as Unix seconds (optional).
+            interval: Coarse range selector, one of "1m", "1h", "6h", "1d",
+                "1w", "max". Used when start/end are not given.
+            fidelity: Resolution of the returned series in minutes (optional).
+
+        Returns:
+            DataFrame with columns ``timestamp`` (UTC) and ``price`` (float),
+            sorted ascending. Empty DataFrame with those columns if no data.
+        """
+        params: Dict[str, Any] = {"market": token_id}
+        if start_ts is not None:
+            params["startTs"] = int(start_ts)
+        if end_ts is not None:
+            params["endTs"] = int(end_ts)
+        if interval is not None:
+            params["interval"] = interval
+        # The endpoint requires either a range or an interval; default to "max".
+        if start_ts is None and end_ts is None and interval is None:
+            params["interval"] = "max"
+        # Bounded intervals (e.g. "1w", "1d", "6h", "1h") require a minimum
+        # 'fidelity' (in minutes); "max" does not. Default to hourly when the
+        # caller requested a bounded interval without specifying fidelity.
+        if fidelity is None and params.get("interval") not in (None, "max"):
+            fidelity = 60
+        if fidelity is not None:
+            params["fidelity"] = int(fidelity)
+
+        out = self._get("/prices-history", params=params)
+        return parse_price_history(out)

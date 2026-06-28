@@ -121,6 +121,142 @@ paywall_risk:
 - "likely": known paywalled providers (Bloomberg, PitchBook, WSJ) or clear login/subscription barrier.
 
 =====================================================================
+CONNECTOR BUILD SPECIFICATION (CRITICAL FOR DOWNSTREAM AUTOMATION)
+=====================================================================
+Each plan in plans[] will be consumed by a downstream connector-builder agent that
+generates working Python functions. You MUST provide enough detail for that agent to
+write a connector WITHOUT visiting the page itself.
+
+For EVERY plan, you MUST fill these additional fields:
+
+1. extraction_target  (REQUIRED — string)
+   Describe the EXACT data element to extract from the page or API response.
+   Be as specific as possible about what the value represents and where it appears.
+   - For dashboards/charts: identify the specific metric, its visual location on the
+     page, and any visible text labels near it (e.g. "the headline stat labeled
+     'TOTAL SPENDS' showing '$973.3M' in the top-right stats area").
+   - For APIs: describe the response field (e.g. "the 'total_volume' field in the
+     JSON response array").
+   - For tables: describe which row/column contains the data.
+
+2. extraction_method_detail  (REQUIRED — string)
+   Step-by-step instructions for how a scraper or fetcher should locate and extract
+   the target data. Think about what a developer reading only this field would need:
+   - For web pages: suggest CSS selector patterns, text-content patterns to search
+     for, or DOM structure hints (e.g. "Look for an element containing text matching
+     /TOTAL SPENDS/i; the sibling or child element contains the dollar amount.
+     Likely selector: '.stat-value', '.metric-total', or 'h2/h3 near TOTAL SPENDS'.").
+   - For JSON APIs: specify the JSON path (e.g. "$.data[*].total_volume").
+   - For CSV/tables: specify column names or indices.
+   - For Wayback: describe how to reconstruct a time series from snapshots (see
+     WAYBACK section below).
+
+3. value_parse_pattern  (string | null)
+   How to convert the raw extracted text into a numeric value. Common patterns:
+   - Dollar with suffix: "Strip leading '$', parse float, multiply by 1e6 for 'M'
+     suffix, 1e9 for 'B' suffix, 1e12 for 'T' suffix."
+   - Percentage: "Strip trailing '%', parse float, divide by 100."
+   - Comma-separated: "Remove commas, parse as integer."
+   - If the value is already numeric (from JSON API), set to null.
+
+4. page_interaction_required  (string | null)
+   Any page interactions, dropdown selections, toggle switches, or URL parameters
+   needed to put the page into the correct state for extraction.
+   - Example: "Select dropdowns: Volume='Cumulative', Scope='All'. These may be
+     URL params (?view=cumulative&scope=all) or JS state."
+   - If none needed, set to null.
+
+5. rendering_notes  (string | null)
+   Whether the page is server-side rendered (SSR) or client-side JS-rendered (CSR).
+   This is critical for Wayback and scraping feasibility:
+   - SSR: data is in the initial HTML → scraping and Wayback work well.
+   - CSR (React/Vue/Angular SPA): data is loaded via XHR/fetch after page load →
+     Wayback may only capture the HTML shell. In this case, try to identify the
+     underlying API endpoint the frontend calls (look for /api/, GraphQL, or
+     data-fetching URLs in common patterns for that site).
+   - If unsure, state "likely CSR" and suggest checking for XHR endpoints.
+
+6. output_columns  (list of strings)
+   The exact column names the connector function should return as a DataFrame/dict.
+   Always include a date/timestamp column first.
+   - Example: ["date", "cumulative_crypto_card_volume_usd"]
+   - Example: ["timestamp", "btc_holdings", "btc_holdings_usd"]
+
+7. connector_function_name  (REQUIRED — string)
+   A descriptive Python function name in snake_case.
+   Pattern: fetch_{source}_{metric}
+   - Example: "fetch_paymentscan_cumulative_volume"
+   - Example: "fetch_arkm_el_salvador_btc_holdings"
+
+=====================================================================
+WAYBACK SNAPSHOT PLANS: EXTRACTION DETAIL (IMPORTANT)
+=====================================================================
+When proposing a wayback_snapshots plan, you must think carefully about how a
+connector-builder agent will reconstruct a time series from archived snapshots.
+
+A. Assess rendering mode:
+   Many crypto dashboards (Dune, DefiLlama, custom analytics) are JS-rendered SPAs.
+   Wayback Machine captures the HTML as-is at crawl time.
+   - If SSR: the metric value is in the raw HTML → parse directly.
+   - If CSR: the HTML shell may not contain the data. In this case:
+     (a) Suggest also looking for an underlying API endpoint that powers the chart.
+         The CDX API (web.archive.org/cdx/) can reveal what companion URLs were
+         archived alongside the main page.
+     (b) If no API is discoverable, note that a headless browser + Wayback replay
+         may be needed (higher effort).
+
+B. Identify the extraction target precisely:
+   Dashboard pages often have MULTIPLE metrics. You must specify EXACTLY which one:
+   - Visible label text near the metric (e.g., "TOTAL SPENDS")
+   - Position on page (header stat, sidebar, chart tooltip)
+   - Expected format (e.g., "$973.3M", "1,234 BTC")
+
+C. Describe the time-series reconstruction:
+   - Each Wayback snapshot yields ONE data point: (snapshot_date, extracted_value).
+   - The CDX API at web.archive.org/cdx/search/cdx?url=<target>&output=json returns
+     available snapshots with timestamps.
+   - Connector should: (1) query CDX for all snapshot timestamps, (2) fetch each
+     snapshot, (3) extract the target value, (4) build date→value series.
+   - State expected snapshot frequency (daily? weekly? sporadic?) and whether gaps
+     are acceptable.
+
+D. Example of a well-specified wayback plan:
+   For a market about cumulative crypto card payments using PaymentScan:
+   {
+     "connector_type": "wayback_snapshots",
+     "connector_key": "wayback_snapshots:www.paymentscan.xyz",
+     "series_id": "cumulative_crypto_card_volume_usd",
+     "method": "wayback",
+     "target": "PaymentScan - Cumulative Crypto Card Volumes",
+     "url_or_endpoint_hint": "https://www.paymentscan.xyz/",
+     "extraction_target": "The 'TOTAL SPENDS' headline metric displayed prominently
+       in the page header area, showing the cumulative total as a dollar amount
+       (e.g., '$973.3M').",
+     "extraction_method_detail": "1) Fetch the Wayback snapshot HTML for each
+       archived date. 2) Search for an element whose text content matches
+       /TOTAL\\s*SPENDS/i. 3) The dollar amount is in a nearby sibling/child element,
+       likely a heading or large-font stat widget. Try selectors: '.stat-value',
+       'h2', 'h3', or any element matching /\\$[\\d,.]+[MBT]?/. 4) If the page is
+       CSR and the value is not in raw HTML, check CDX for companion API calls
+       (e.g., URLs containing /api/ or .json) captured alongside the main page.",
+     "value_parse_pattern": "Strip '$', parse float, multiply by 1e6 for 'M',
+       1e9 for 'B'. Handle comma separators.",
+     "page_interaction_required": "Filters should be set to: Volume type =
+       'Cumulative', Card filter = 'All'. Check if these are URL params or
+       if the default page state already shows cumulative totals.",
+     "rendering_notes": "Likely CSR (JavaScript SPA). Check if Wayback captured
+       the rendered state or only the shell. If shell-only, look for XHR/fetch
+       endpoints in CDX captures (e.g., an API URL returning JSON chart data).",
+     "output_columns": ["date", "cumulative_crypto_card_volume_usd"],
+     "connector_function_name": "fetch_paymentscan_cumulative_volume",
+     "access": "free",
+     "effort": "medium",
+     "reliability": "medium",
+     "notes": "Snapshot frequency may be sparse; interpolation or gap-filling
+       may be needed for daily granularity."
+   }
+
+=====================================================================
 OUTPUT REQUIREMENTS
 =====================================================================
 - Output MUST be valid JSON matching the schema below.
@@ -130,6 +266,9 @@ OUTPUT REQUIREMENTS
 - plans[] should list the most plausible approach FIRST.
 - Do not invent precise endpoints unless confident; if unsure, use connector_type="unknown" with method="unknown"
   and explain.
+- EVERY plan MUST include the connector build spec fields (extraction_target,
+  extraction_method_detail, output_columns, connector_function_name). These are
+  not optional — a downstream agent depends on them to generate working code.
 
 ========================
 OUTPUT JSON SCHEMA (must match):
@@ -175,7 +314,15 @@ OUTPUT JSON SCHEMA (must match):
 
       "effort": "low|medium|high",
       "reliability": "low|medium|high",
-      "notes": "string|null"
+      "notes": "string|null",
+
+      "extraction_target": "string  (REQUIRED — what exact data element to extract)",
+      "extraction_method_detail": "string  (REQUIRED — step-by-step extraction instructions)",
+      "value_parse_pattern": "string|null  (how to parse raw text to numeric)",
+      "page_interaction_required": "string|null  (dropdowns, filters, URL params needed)",
+      "rendering_notes": "string|null  (SSR vs CSR, underlying API hints)",
+      "output_columns": ["string"],
+      "connector_function_name": "string  (REQUIRED — snake_case Python function name)"
     }
   ],
 
@@ -190,7 +337,7 @@ OUTPUT JSON SCHEMA (must match):
 
 historical_data_triage_agent = Agent(
     name="historical_data_triage",
-    model="gpt-5.2-pro-2025-12-11",
+    model="gpt-5.4",
     instructions=INSTRUCTIONS,
     output_type=AgentOutputSchema(HistoricalDataTriage, strict_json_schema=False),
 )
