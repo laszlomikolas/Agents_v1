@@ -266,7 +266,7 @@ async def triage_dataframe_incremental_async(
 
     # Merge: start from cache, drop rows that were re-triaged, append fresh
     if cache_df is not None and not cache_df.empty:
-        retriaged_markets = set(fresh[_ROW_KEY].astype(str))
+        retriaged_markets = set(delta[_ROW_KEY].astype(str))
         kept = cache_df[~cache_df[_ROW_KEY].astype(str).isin(retriaged_markets)]
         merged = pd.concat([kept, fresh], ignore_index=True)
     else:
