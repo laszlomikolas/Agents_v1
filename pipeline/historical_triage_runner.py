@@ -14,6 +14,11 @@ from market_inventory.liquidity_screen import apply_liquidity_screen
 
 logger = logging.getLogger(__name__)
 
+# Bump when the triage output schema changes in a way that invalidates
+# cached parquet rows (new/renamed/removed columns, changed semantics).
+_TRIAGE_SCHEMA_VERSION = 1
+_TRIAGE_SCHEMA_VERSION_COL = "triage_schema_version"
+
 # ── Columns used to detect whether an inventory row has changed ──────────────
 DIFF_COLUMNS: List[str] = [
     "market",
@@ -116,6 +121,9 @@ def save_triage_cache(
 ) -> Path:
     """Persist a triaged DataFrame to parquet."""
     path = Path(path)
+    if _TRIAGE_SCHEMA_VERSION_COL not in df.columns:
+        df = df.copy()
+        df[_TRIAGE_SCHEMA_VERSION_COL] = _TRIAGE_SCHEMA_VERSION
     _strip_arrow_dtypes(df).to_parquet(path, index=False)
     logger.info("triage cache saved: %s (%d rows)", path, len(df))
     return path
@@ -163,6 +171,21 @@ def diff_inventory_vs_cache(
     """
     if cache_df is None or cache_df.empty:
         logger.info("diff: no cache → all %d rows need triaging", len(inventory_df))
+        return inventory_df.reset_index(drop=True)
+
+    if _TRIAGE_SCHEMA_VERSION_COL not in cache_df.columns:
+        logger.warning(
+            "diff: cache missing %s column → all %d rows need re-triaging",
+            _TRIAGE_SCHEMA_VERSION_COL, len(inventory_df),
+        )
+        return inventory_df.reset_index(drop=True)
+
+    cached_versions = set(cache_df[_TRIAGE_SCHEMA_VERSION_COL].dropna().unique().tolist())
+    if cached_versions != {_TRIAGE_SCHEMA_VERSION}:
+        logger.warning(
+            "diff: cache schema version mismatch (cache=%s, current=%d) → all %d rows need re-triaging",
+            sorted(cached_versions), _TRIAGE_SCHEMA_VERSION, len(inventory_df),
+        )
         return inventory_df.reset_index(drop=True)
 
     # Build a lookup: market → dict of diff-column values (stringified)
@@ -429,7 +452,8 @@ async def triage_dataframe_async(
     out["triage_plans_json"] = None
     out["recommended_resolution"] = None
     out["triage_routing_notes"] = None
-    out["triage_error"] = None              
+    out["triage_error"] = None
+    out[_TRIAGE_SCHEMA_VERSION_COL] = _TRIAGE_SCHEMA_VERSION
 
     import json
     for i in out.index:
