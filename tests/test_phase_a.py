@@ -111,10 +111,17 @@ def test_store_ohlcv_roundtrip_and_idempotent():
         assert out["close"].tolist() == [110.0, 120.0, 130.0]
         assert str(out["timestamp"].dt.tz) == "UTC"
 
-        # as-of slice excludes future candles (no look-ahead).
+        # as-of slice filters by candle CLOSE time, not open time. At the
+        # open of day 2 only day 1's candle has fully closed, so the slice
+        # contains exactly one candle.
         asof = df["timestamp"].iloc[1]
         sliced = store.read_ohlcv_asof("BTC", "1d", asof)
-        assert len(sliced) == 2
+        assert len(sliced) == 1
+        assert sliced["close"].tolist() == [110.0]
+
+        # At the open of day 3, day 1 and day 2 candles have closed.
+        sliced2 = store.read_ohlcv_asof("BTC", "1d", df["timestamp"].iloc[2])
+        assert len(sliced2) == 2
 
 
 def test_store_midpoints_and_meta():
