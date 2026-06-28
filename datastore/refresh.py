@@ -107,6 +107,8 @@ def refresh_data(
             result = validate_schema(ohlcv, binance_spec)
             if not result.ok:
                 logger.warning("OHLCV schema check failed for %s: %s", symbol, result.errors)
+                summary["ohlcv_errors"].append(f"{symbol}: schema validation failed: {result.errors}")
+                continue
         summary["ohlcv_rows"] += store.upsert_ohlcv(symbol, interval, ohlcv)
 
     # 2. Current midpoints + 3. metadata.
