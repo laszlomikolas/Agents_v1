@@ -100,6 +100,34 @@ def _now_epoch() -> int:
     return int(pd.Timestamp.now(tz="UTC").timestamp())
 
 
+_INTERVAL_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "M": 2592000}
+
+
+def _interval_to_seconds(interval: str) -> int:
+    """Map an interval string like '1m', '1h', '1d', '1w', '1M' to seconds.
+
+    'M' (month ≈ 30 days) is case-sensitive and distinct from 'm' (minute).
+    All other unit letters are case-insensitive.
+    """
+    if not isinstance(interval, str) or not interval:
+        raise ValueError(f"interval must be a non-empty string, got {interval!r}")
+    stripped = interval.strip()
+    unit = stripped[-1:]
+    # Preserve 'M' (month) as uppercase; lowercase everything else.
+    if unit != "M":
+        stripped = stripped.lower()
+        unit = stripped[-1:]
+    if unit not in _INTERVAL_UNITS:
+        raise ValueError(f"unsupported interval unit in {interval!r}")
+    try:
+        n = int(stripped[:-1])
+    except ValueError as exc:
+        raise ValueError(f"invalid interval {interval!r}") from exc
+    if n <= 0:
+        raise ValueError(f"interval must be positive, got {interval!r}")
+    return n * _INTERVAL_UNITS[unit]
+
+
 class MarketDataStore:
     """Thin idempotent wrapper around a SQLite market-data database."""
 
@@ -256,11 +284,14 @@ class MarketDataStore:
         end: Any = None,
         asof: Any = None,
     ) -> pd.DataFrame:
-        """Read OHLCV candles. ``asof`` restricts to ts <= asof (no look-ahead)."""
+        """Read OHLCV candles. ``asof`` restricts to candles whose close time
+        (``ts + interval_seconds``) is ``<= asof``, so intra-candle queries
+        never see a candle whose OHLC is not yet finalized."""
         sql = "SELECT ts, open, high, low, close, volume FROM ohlcv WHERE symbol=? AND interval=?"
         params: list[Any] = [symbol, interval]
         if asof is not None:
-            sql += " AND ts <= ?"
+            sql += " AND ts + ? <= ?"
+            params.append(_interval_to_seconds(interval))
             params.append(_epoch_scalar(asof))
         if start is not None:
             sql += " AND ts >= ?"
