@@ -16,7 +16,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from datastore.store import MarketDataStore
+from datastore.store import MarketDataStore, _interval_to_seconds
 from market_inventory.inventory import parse_clob_token_ids, parse_outcome_prices
 from market_inventory.polymarket_clients import parse_price_history
 from market_inventory.text_utils import parse_threshold
@@ -81,6 +81,20 @@ def test_parse_price_history_empty():
     assert list(parse_price_history({}).columns) == ["timestamp", "price"]
     assert parse_price_history({}).empty
     assert parse_price_history(None).empty
+
+
+# ── A4: interval helper ──────────────────────────────────────────────────────
+def test_interval_to_seconds():
+    assert _interval_to_seconds("1m") == 60
+    assert _interval_to_seconds("1h") == 3600
+    assert _interval_to_seconds("1d") == 86400
+    assert _interval_to_seconds("1w") == 604800
+    # '1M' is monthly (≈30 days) and must NOT be confused with '1m' (minute).
+    assert _interval_to_seconds("1M") == 2592000
+    assert _interval_to_seconds("3M") == 3 * 2592000
+    # Case-insensitive for non-month units.
+    assert _interval_to_seconds("1H") == 3600
+    assert _interval_to_seconds("1D") == 86400
 
 
 # ── A4: SQLite store ─────────────────────────────────────────────────────────
