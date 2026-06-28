@@ -21,6 +21,7 @@ from typing import Any
 from connectors.binance import fetch_binance_ohlcv
 from connectors.bitstamp import fetch_bitstamp_ohlcv
 from connectors.bybit import fetch_bybit_ohlcv
+from connectors.chainlink import fetch_chainlink_price_feed
 from connectors.coinbase import fetch_coinbase_ohlcv
 from connectors.coingecko import fetch_coingecko_ohlcv
 from connectors.kraken import fetch_kraken_ohlcv
@@ -40,6 +41,7 @@ __all__ = [
     "fetch_binance_ohlcv",
     "fetch_bitstamp_ohlcv",
     "fetch_bybit_ohlcv",
+    "fetch_chainlink_price_feed",
     "fetch_coinbase_ohlcv",
     "fetch_coingecko_ohlcv",
     "fetch_kraken_ohlcv",
@@ -75,6 +77,18 @@ def _ohlcv_cols() -> list[ColumnSpec]:
 # probe_kwargs use small limits so validation probes are fast (~1–2 s each).
 
 SCHEMA_REGISTRY: dict[str, tuple[SchemaSpec, Any]] = {
+    "chainlink": (
+        SchemaSpec(
+            name="chainlink",
+            columns=[
+                ColumnSpec("timestamp", "M"),
+                ColumnSpec("round_id",  "i", min_value=0),
+                ColumnSpec("price",     "f", min_value=0.0),
+            ],
+            probe_kwargs={"feed": "BTC/USD", "n_rounds": 5},
+        ),
+        fetch_chainlink_price_feed,
+    ),
     "coingecko": (
         SchemaSpec(
             name="coingecko",
