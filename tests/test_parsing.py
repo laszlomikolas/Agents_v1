@@ -24,6 +24,14 @@ FDV_TERMS = (
     'This market will resolve to "Yes" if the Fully Diluted Valuation of the token '
     "is greater than the value specified in the title 1 day after launch."
 )
+# Touch-up terms with generic UMA-style settlement/fallback boilerplate mixed in.
+# "settlement" appears here only as a generic data-source disclaimer, not as the
+# "settlement price" phrase that actually denotes a terminal/close-based market.
+TOUCH_HIGH_WITH_SETTLEMENT_BOILERPLATE_TERMS = (
+    TOUCH_HIGH_TERMS
+    + " In the event of a dispute, this market will be settled using the settlement "
+    "process and data sources outlined in the UMA Optimistic Oracle documentation."
+)
 
 
 # ── A2: parse_threshold ──────────────────────────────────────────────────────
@@ -120,3 +128,39 @@ def test_parse_threshold_style(question, terms, expected):
 )
 def test_resolution_basis(question, terms, expected):
     assert resolution_basis(question, terms) == expected
+
+
+def test_resolution_basis_ignores_generic_settlement_boilerplate():
+    """Regression: a touch-up market whose terms also carry generic settlement/
+    fallback boilerplate (e.g. UMA dispute-resolution language) must still resolve
+    to "high", not be short-circuited to "close" by the bare word "settlement".
+    """
+    question = "Will Bitcoin reach $68,000 on June 29?"
+    assert (
+        resolution_basis(question, TOUCH_HIGH_WITH_SETTLEMENT_BOILERPLATE_TERMS)
+        == "high"
+    )
+
+
+# ── data_type gate: non-candle markets must not be labeled via question wording ─
+def test_fdv_reach_question_not_mislabeled_as_touch_on_daily_metric():
+    """Regression: a 'reach'-phrased FDV question must not get
+    threshold_style='touch' / resolution_basis='high' via the question-wording
+    fallback. _TOUCH_WORDS ("reach", "hit", ...) are generic and not OHLC-specific,
+    so the fallback is gated on ``data_type == 'candle_ohlcv'``.
+    """
+    question = "Will Token FDV reach $1B?"
+
+    # Without the gate (default data_type=None preserves old behavior), the
+    # question-wording fallback would fire and mislabel the FDV market.
+    assert parse_threshold_style(question, None) == "touch"
+    assert resolution_basis(question, None) == "high"
+
+    # With the gate engaged for a daily_metric row, both helpers return None.
+    assert parse_threshold_style(question, None, data_type="daily_metric") is None
+    assert resolution_basis(question, None, data_type="daily_metric") is None
+
+    # The gate does not interfere with candle markets — a "reach" question on a
+    # candle row still resolves to touch/high.
+    assert parse_threshold_style(question, None, data_type="candle_ohlcv") == "touch"
+    assert resolution_basis(question, None, data_type="candle_ohlcv") == "high"
