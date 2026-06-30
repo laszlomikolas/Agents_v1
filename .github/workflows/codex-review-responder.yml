@@ -54,7 +54,9 @@ jobs:
       - name: Triage Codex comment
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Authenticates with your Claude Pro/Max subscription.
+          # Generate locally with `claude setup-token` (token valid ~1 year).
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # --model is optional; opus gives the best correctness judgement.
           # Drop to claude-sonnet-4-6 to cut cost.
