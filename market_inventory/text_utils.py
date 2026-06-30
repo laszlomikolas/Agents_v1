@@ -202,3 +202,115 @@ def parse_threshold(question: str) -> tuple[Optional[float], Optional[str]]:
             break
 
     return strike, direction
+
+
+# ── Resolution mechanics: touch (barrier) vs terminal (close) ────────────────
+#
+# Two price-threshold markets that parse to the same (strike, direction) can
+# resolve very differently:
+#   * TOUCH    – resolves YES if the price *ever* crosses the strike during the
+#                window (e.g. "any 1-minute candle High >= $X"). A first-passage
+#                / barrier event on the window's intraday high (up) or low (down).
+#   * TERMINAL – resolves on the *closing* price at the resolution time.
+# Phase B needs this distinction to pick the right model (first-passage vs
+# lognormal-terminal) and the right OHLC field for the backtest.
+
+_TOUCH_WORDS = (
+    "reach", "reaches", "reached", "hit", "hits", "dip to", "dips to",
+    "touch", "touches", "climb to", "climbs to", "fall to", "falls to",
+    "drop to", "drops to", "get to", "gets to",
+)
+_TERMINAL_WORDS = (
+    "be above", "be below", "close above", "close below",
+    "end above", "end below", "closing", "settle above", "settle below",
+)
+
+
+def parse_threshold_style(
+    question: str,
+    terms: Optional[str] = None,
+    *,
+    data_type: Optional[str] = None,
+) -> Optional[str]:
+    """Classify a threshold market's resolution mechanics.
+
+    Returns ``"touch"`` (barrier / first-passage) or ``"terminal"`` (close-based),
+    or ``None`` when undetermined. The resolution *terms* are the source of truth;
+    question wording is a fallback when terms are missing/ambiguous.
+
+    ``data_type`` is the row's resolution data type (e.g. ``"candle_ohlcv"`` or
+    ``"daily_metric"``). _TOUCH_WORDS like "reach"/"hit" are generic and not
+    candle-specific, so the question-wording fallback only fires for candle
+    markets — on a daily_metric row like FDV/market cap it would otherwise
+    mislabel "Will Token FDV reach $1B?" as touch/high. Passing ``None`` keeps
+    the fallback enabled (backwards-compatible default).
+    """
+    text = (terms or "").lower()
+    if text:
+        # "any ... candle ... High/Low ... greater/lower" or "immediately resolve"
+        # / "at any point" are unambiguous touch signals.
+        crosses_intraday = (
+            ("high" in text or "low" in text)
+            and ("greater" in text or "lower" in text or "equal to or" in text or "at or" in text)
+        )
+        if ("any" in text and crosses_intraday) or "immediately resolve" in text \
+                or "at any point" in text or "at any time" in text or " ever " in text:
+            return "touch"
+        # Touch is checked first, so a close-based rule here is genuinely terminal
+        # ("clos" matches close/closing; avoids being fooled by "or higher" etc.).
+        if "clos" in text or "settlement price" in text:
+            return "terminal"
+
+    if data_type is not None and data_type != "candle_ohlcv":
+        return None
+
+    q = (question or "").lower()
+    if any(word in q for word in _TOUCH_WORDS):
+        return "touch"
+    if any(word in q for word in _TERMINAL_WORDS):
+        return "terminal"
+    return None
+
+
+def resolution_basis(
+    question: str,
+    terms: Optional[str] = None,
+    threshold_style: Optional[str] = None,
+    *,
+    data_type: Optional[str] = None,
+) -> Optional[str]:
+    """Which OHLC field resolves the market: ``"high"``, ``"low"``, or ``"close"``.
+
+    This is the actionable "barrier side" the backtest compares the strike to:
+    a touch-up market resolves on the window High, a touch-down on the Low, and a
+    terminal market on the Close. Derived from the resolution terms when possible,
+    else from ``threshold_style`` + the question's direction.
+
+    ``data_type`` gates the style/direction fallback: a daily_metric row has no
+    OHLC fields to map onto, so we return ``None`` instead of inferring "high"
+    from a "reach"-style question.
+    """
+    text = (terms or "").lower()
+    if text:
+        has_high = re.search(r"\bhigh\b", text) is not None
+        has_low = re.search(r"\blow\b", text) is not None
+        if has_high and not has_low:
+            return "high"
+        if has_low and not has_high:
+            return "low"
+        if "clos" in text or "final price" in text or "settlement price" in text:
+            return "close"
+
+    if data_type is not None and data_type != "candle_ohlcv":
+        return None
+
+    style = threshold_style or parse_threshold_style(question, terms, data_type=data_type)
+    if style == "terminal":
+        return "close"
+    if style == "touch":
+        _strike, direction = parse_threshold(question)
+        if direction == "above":
+            return "high"
+        if direction == "below":
+            return "low"
+    return None
