@@ -3,3 +3,4 @@
 -r requirements.txt
 pytest==9.1.1
 pytest-cov==7.1.0
+matplotlib==3.11.0  # optional: plots in notebooks/phase_a_demo.ipynb
