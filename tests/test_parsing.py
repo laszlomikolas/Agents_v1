@@ -120,3 +120,27 @@ def test_parse_threshold_style(question, terms, expected):
 )
 def test_resolution_basis(question, terms, expected):
     assert resolution_basis(question, terms) == expected
+
+
+# ── data_type gate: non-candle markets must not be labeled via question wording ─
+def test_fdv_reach_question_not_mislabeled_as_touch_on_daily_metric():
+    """Regression: a 'reach'-phrased FDV question must not get
+    threshold_style='touch' / resolution_basis='high' via the question-wording
+    fallback. _TOUCH_WORDS ("reach", "hit", ...) are generic and not OHLC-specific,
+    so the fallback is gated on ``data_type == 'candle_ohlcv'``.
+    """
+    question = "Will Token FDV reach $1B?"
+
+    # Without the gate (default data_type=None preserves old behavior), the
+    # question-wording fallback would fire and mislabel the FDV market.
+    assert parse_threshold_style(question, None) == "touch"
+    assert resolution_basis(question, None) == "high"
+
+    # With the gate engaged for a daily_metric row, both helpers return None.
+    assert parse_threshold_style(question, None, data_type="daily_metric") is None
+    assert resolution_basis(question, None, data_type="daily_metric") is None
+
+    # The gate does not interfere with candle markets — a "reach" question on a
+    # candle row still resolves to touch/high.
+    assert parse_threshold_style(question, None, data_type="candle_ohlcv") == "touch"
+    assert resolution_basis(question, None, data_type="candle_ohlcv") == "high"

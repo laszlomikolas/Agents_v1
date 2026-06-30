@@ -267,8 +267,12 @@ def inventory_crypto_markets(
                     )
 
                 routing = route_resolution_terms(res_source, res_terms)
-                t_style = parse_threshold_style(question, res_terms)
-                res_basis = resolution_basis(question, res_terms, t_style)
+                t_style = parse_threshold_style(
+                    question, res_terms, data_type=routing.data_type
+                )
+                res_basis = resolution_basis(
+                    question, res_terms, t_style, data_type=routing.data_type
+                )
 
                 rows.append(
                     {
