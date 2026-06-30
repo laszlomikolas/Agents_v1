@@ -7,7 +7,12 @@ import pandas as pd
 from market_inventory.polymarket_clients import GammaClient
 
 from .resolution_routing import route_resolution_terms
-from .text_utils import parse_metric, parse_underlying_symbol
+from .text_utils import (
+    parse_metric,
+    parse_threshold_style,
+    parse_underlying_symbol,
+    resolution_basis,
+)
 from .universe import CoinUniverse, ProjectUniverse
 
 
@@ -243,6 +248,10 @@ def inventory_crypto_markets(
 
                 outcomes = normalize_outcomes(mkt.get("outcomes"))
                 kind = classify_edge_or_range(question, outcomes)
+                # TODO(up-or-down): add a "direction" kind for Up/Down markets
+                # (outcomes == {"Up","Down"}, interval from event seriesSlug). These
+                # are a separate strategy track (sign prediction, no strike) and are
+                # currently dropped here as "unknown".
                 if kind not in {"edge", "range"}:
                     continue
 
@@ -258,6 +267,12 @@ def inventory_crypto_markets(
                     )
 
                 routing = route_resolution_terms(res_source, res_terms)
+                t_style = parse_threshold_style(
+                    question, res_terms, data_type=routing.data_type
+                )
+                res_basis = resolution_basis(
+                    question, res_terms, t_style, data_type=routing.data_type
+                )
 
                 rows.append(
                     {
@@ -265,6 +280,11 @@ def inventory_crypto_markets(
                         "kind": kind,
                         "symbol": symbol,
                         "metric": metric,
+                        "threshold_style": t_style,
+                        "resolution_basis": res_basis,
+                        "event_title": ev.get("title"),
+                        "event_slug": ev.get("slug"),
+                        "series_slug": ev.get("seriesSlug") or ev.get("series_slug"),
                         "market_id": mkt.get("id"),
                         "slug": mkt.get("slug"),
                         "condition_id": mkt.get("conditionId") or mkt.get("condition_id"),

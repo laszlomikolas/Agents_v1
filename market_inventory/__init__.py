@@ -8,7 +8,9 @@ from .text_utils import (
     normalize_text,
     parse_metric,
     parse_threshold,
+    parse_threshold_style,
     parse_underlying_symbol,
+    resolution_basis,
     words,
 )
 from .tradeable_universe import select_tradeable_universe
@@ -24,7 +26,9 @@ __all__ = [
     "normalize_text",
     "parse_metric",
     "parse_threshold",
+    "parse_threshold_style",
     "parse_underlying_symbol",
+    "resolution_basis",
     "route_resolution_terms",
     "select_tradeable_universe",
     "words",
