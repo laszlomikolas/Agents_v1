@@ -292,14 +292,14 @@ def resolution_basis(
     """
     text = (terms or "").lower()
     if text:
-        if "clos" in text or "final price" in text or "settlement" in text:
-            return "close"
         has_high = re.search(r"\bhigh\b", text) is not None
         has_low = re.search(r"\blow\b", text) is not None
         if has_high and not has_low:
             return "high"
         if has_low and not has_high:
             return "low"
+        if "clos" in text or "final price" in text or "settlement price" in text:
+            return "close"
 
     if data_type is not None and data_type != "candle_ohlcv":
         return None
