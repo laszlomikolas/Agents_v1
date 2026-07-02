@@ -12,8 +12,12 @@ refresh job simply appends new points and overwrites overlapping ones. All
 timestamps are stored as integer Unix seconds (UTC) and returned as tz-aware
 ``timestamp`` columns.
 
-stdlib ``sqlite3`` only — no new dependency. Revisit (DuckDB/Parquet/Timescale)
-if data volume outgrows a single SQLite file.
+stdlib ``sqlite3`` only — no new dependency.
+
+TODO: this is a single local file with no backup/durability story and won't
+scale well as symbol/price coverage grows. Revisit (DuckDB/Parquet on cloud
+storage, or a hosted DB) once the current strategy reaches paper trading —
+durability/scalability becomes the first priority after that.
 """
 from __future__ import annotations
 
