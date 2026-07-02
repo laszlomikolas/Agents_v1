@@ -58,11 +58,18 @@ jobs:
           # Generate locally with `claude setup-token` (token valid ~1 year).
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # The action's own bot gate defaults to blocking ALL bots
+          # (allowed_bots="" => no bots), so without this the Codex-authored
+          # event starts the job but is skipped before any triage runs.
+          allowed_bots: "chatgpt-codex-connector[bot]"
           # --model is optional; opus gives the best correctness judgement.
           # Drop to claude-sonnet-4-6 to cut cost.
+          # --allowedTools: Bash is denied by default; the triage skill shells
+          # out to gh (fetch/reply/PR) and git (branch/commit/push).
           claude_args: >-
             --max-turns 40
             --model claude-opus-4-8
+            --allowedTools "Bash(gh:*),Bash(git:*)"
           prompt: |
             A review comment from Codex (an automated AI reviewer) was just
             posted on a pull request. Use the `triage-codex-review` skill to
