@@ -55,6 +55,47 @@ def make_daily_ohlcv():
 
 
 @pytest.fixture
+def gbm_ohlcv():
+    """Factory: simulate a driftless-GBM daily OHLCV series (no network).
+
+    Each candle is built from ``sub_steps`` intra-day log-return steps so the
+    High/Low reflect a realistic intra-candle path — needed for meaningful
+    *touch* (barrier) labels. Driftless with a known annual vol, so the
+    closed-form GBM baseline is well-specified and the fitted models should be
+    well-calibrated on it.
+    """
+    import numpy as np
+
+    def _make(
+        n_candles: int = 1500,
+        sub_steps: int = 24,
+        sigma_annual: float = 0.6,
+        start_price: float = 100.0,
+        seed: int = 7,
+    ) -> pd.DataFrame:
+        rng = np.random.default_rng(seed)
+        seconds_per_year = 365.25 * 24 * 3600.0
+        day = 24 * 3600.0
+        step_vol = sigma_annual * np.sqrt(day / sub_steps / seconds_per_year)
+        steps = rng.standard_normal(n_candles * sub_steps) * step_vol
+        log_prices = np.log(start_price) + np.cumsum(steps)
+        prices = np.exp(log_prices).reshape(n_candles, sub_steps)
+        ts = pd.date_range("2022-01-01", periods=n_candles, freq="D", tz="UTC")
+        return pd.DataFrame(
+            {
+                "timestamp": ts,
+                "open": prices[:, 0],
+                "high": prices.max(axis=1),
+                "low": prices.min(axis=1),
+                "close": prices[:, -1],
+                "volume": np.full(n_candles, 100.0),
+            }
+        )
+
+    return _make
+
+
+@pytest.fixture
 def sample_inventory() -> pd.DataFrame:
     """Inventory-shaped rows exercising every select_tradeable_universe branch."""
     return pd.DataFrame(
